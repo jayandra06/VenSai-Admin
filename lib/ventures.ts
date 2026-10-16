@@ -1,0 +1,352 @@
+import { MongoClient } from "mongodb";
+import { randomBytes, scryptSync } from "crypto";
+import { getDb } from "@/lib/db";
+import { describeMongoUri, type EnvPair } from "@/lib/env";
+
+export const VENTURES = [
+  {
+    slug: "rofyt",
+    name: "Rofyt",
+    summary: "Car rental platform. Each company gets its own database for fleet and locations.",
+  },
+] as const;
+
+export type VentureCluster = {
+  id: string;
+  company: string;
+  database: string;
+  createdAt: string;
+};
+
+export type VenturePool = {
+  id: string;
+  label: string;
+  uri: string;
+  freeLimit: number;
+  clusters: VentureCluster[];
+};
+
+export type Venture = {
+  slug: string;
+  name: string;
+  deployedUrl: string;
+  env: EnvPair[];
+  adminEmail: string;
+  adminPassword: string;
+  pools: VenturePool[];
+  lastSeed: { email: string; database: string; host: string; at: string } | null;
+};
+
+const PROTECTED = new Set(["admin", "local", "config", "vensai"]);
+
+function blank(preset: (typeof VENTURES)[number]): Venture {
+  return {
+    slug: preset.slug,
+    name: preset.name,
+    deployedUrl: "",
+    env: [],
+    adminEmail: "",
+    adminPassword: "",
+    pools: [],
+    lastSeed: null,
+  };
+}
+
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function mapVenture(preset: (typeof VENTURES)[number], doc: Record<string, unknown> | null): Venture {
+  if (!doc) return blank(preset);
+  const env = Array.isArray(doc.env)
+    ? doc.env
+        .map((row) => ({
+          key: asString((row as EnvPair).key),
+          value: asString((row as EnvPair).value),
+        }))
+        .filter((row) => row.key)
+    : [];
+  const pools = Array.isArray(doc.pools)
+    ? doc.pools.map((pool) => {
+        const item = pool as Record<string, unknown>;
+        const clusters = Array.isArray(item.clusters)
+          ? item.clusters.map((cluster) => {
+              const row = cluster as Record<string, unknown>;
+              const created = row.createdAt instanceof Date ? row.createdAt : new Date();
+              return {
+                id: asString(row.id),
+                company: asString(row.company),
+                database: asString(row.database),
+                createdAt: created.toISOString(),
+              };
+            })
+          : [];
+        return {
+          id: asString(item.id),
+          label: asString(item.label) || "MongoDB",
+          uri: asString(item.uri),
+          freeLimit: Number(item.freeLimit) || 700,
+          clusters,
+        };
+      })
+    : [];
+  const seed = doc.lastSeed as Record<string, unknown> | null;
+  return {
+    slug: preset.slug,
+    name: asString(doc.name) || preset.name,
+    deployedUrl: asString(doc.deployedUrl),
+    env,
+    adminEmail: asString(doc.adminEmail),
+    adminPassword: asString(doc.adminPassword),
+    pools,
+    lastSeed:
+      seed && asString(seed.email)
+        ? {
+            email: asString(seed.email),
+            database: asString(seed.database),
+            host: asString(seed.host),
+            at: asString(seed.at),
+          }
+        : null,
+  };
+}
+
+export function findPreset(slug: string) {
+  return VENTURES.find((item) => item.slug === slug) ?? null;
+}
+
+export async function listVentures() {
+  const db = await getDb();
+  const docs = await db
+    .collection("ventures")
+    .find({ slug: { $in: VENTURES.map((item) => item.slug) } })
+    .toArray();
+  return VENTURES.map((preset) => {
+    const doc = docs.find((item) => item.slug === preset.slug) ?? null;
+    const venture = mapVenture(preset, doc as Record<string, unknown> | null);
+    const clusters = venture.pools.reduce((sum, pool) => sum + pool.clusters.length, 0);
+    return { ...preset, uris: venture.pools.length, clusters };
+  });
+}
+
+export async function getVenture(slug: string) {
+  const preset = findPreset(slug);
+  if (!preset) return null;
+  const db = await getDb();
+  const doc = await db.collection("ventures").findOne({ slug });
+  return mapVenture(preset, doc as Record<string, unknown> | null);
+}
+
+async function ensureVenture(slug: string) {
+  const preset = findPreset(slug);
+  if (!preset) return null;
+  const db = await getDb();
+  await db.collection("ventures").updateOne(
+    { slug },
+    {
+      $setOnInsert: {
+        slug,
+        name: preset.name,
+        deployedUrl: "",
+        env: [],
+        adminEmail: "",
+        adminPassword: "",
+        pools: [],
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+  return preset;
+}
+
+export function readSettings(formData: FormData) {
+  const keys = formData.getAll("envKey").map((item) => String(item).trim());
+  const values = formData.getAll("envValue").map((item) => String(item));
+  const env = keys
+    .map((key, index) => ({ key, value: values[index] ?? "" }))
+    .filter((row) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(row.key));
+  return {
+    name: String(formData.get("name") || "").trim(),
+    deployedUrl: String(formData.get("deployedUrl") || "").trim(),
+    adminEmail: String(formData.get("adminEmail") || "").trim(),
+    adminPassword: String(formData.get("adminPassword") || ""),
+    env,
+  };
+}
+
+export async function saveSettings(slug: string, input: ReturnType<typeof readSettings>) {
+  const preset = await ensureVenture(slug);
+  if (!preset) return null;
+  const current = await getVenture(slug);
+  const db = await getDb();
+  await db.collection("ventures").updateOne(
+    { slug },
+    {
+      $set: {
+        name: input.name || preset.name,
+        deployedUrl: input.deployedUrl,
+        env: input.env,
+        adminEmail: input.adminEmail,
+        adminPassword: input.adminPassword || current?.adminPassword || "",
+        updatedAt: new Date(),
+      },
+    },
+  );
+  return getVenture(slug);
+}
+
+export function isMongoUri(uri: string) {
+  return /^mongodb(\+srv)?:\/\//.test(uri);
+}
+
+async function withClient<T>(uri: string, run: (client: MongoClient) => Promise<T>) {
+  if (!isMongoUri(uri)) throw new Error("invalid-uri");
+  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 8000 });
+  try {
+    await client.connect();
+    return await run(client);
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+export async function pingMongo(uri: string) {
+  try {
+    await withClient(uri, (client) => client.db().command({ ping: 1 }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function seedAdminAccount(uri: string, email: string, password: string) {
+  const target = describeMongoUri(uri);
+  const database = target?.database || "rofyt";
+  if (PROTECTED.has(database)) throw new Error("protected-db");
+  const salt = randomBytes(16).toString("hex");
+  const passwordHash = scryptSync(password, salt, 32).toString("hex");
+  await withClient(uri, async (client) => {
+    const admins = client.db(database).collection("admins");
+    await admins.createIndex({ email: 1 }, { unique: true });
+    await admins.updateOne(
+      { email },
+      {
+        $set: {
+          email,
+          role: "admin",
+          passwordHash,
+          passwordSalt: salt,
+          passwordAlgo: "scrypt",
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
+      },
+      { upsert: true },
+    );
+  });
+  return { database, host: target?.host || "" };
+}
+
+export async function rememberSeed(
+  slug: string,
+  seed: { email: string; database: string; host: string },
+) {
+  const db = await getDb();
+  await db.collection("ventures").updateOne(
+    { slug },
+    { $set: { lastSeed: { ...seed, at: new Date().toISOString() } } },
+  );
+}
+
+export async function addPool(slug: string, label: string, uri: string, freeLimit: number) {
+  await ensureVenture(slug);
+  const db = await getDb();
+  const pool = {
+    id: crypto.randomUUID(),
+    label: label || "MongoDB",
+    uri,
+    freeLimit,
+    clusters: [],
+  };
+  await db.collection("ventures").updateOne({ slug }, { $push: { pools: pool } } as never);
+}
+
+function companyDatabase(company: string) {
+  const slug = company
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+  if (!slug) return null;
+  const database = `rofyt-${slug}`;
+  if (PROTECTED.has(database) || database.length > 63) return null;
+  return database;
+}
+
+export async function createCompanyCluster(slug: string, poolId: string, company: string) {
+  const venture = await getVenture(slug);
+  const pool = venture?.pools.find((item) => item.id === poolId);
+  if (!venture || !pool) return "missing" as const;
+  if (pool.clusters.length >= pool.freeLimit) return "limit" as const;
+  const database = companyDatabase(company);
+  if (!database) return "company" as const;
+  if (pool.clusters.some((item) => item.database === database || item.company.toLowerCase() === company.toLowerCase())) {
+    return "duplicate" as const;
+  }
+  try {
+    await withClient(pool.uri, async (client) => {
+      const databaseRef = client.db(database);
+      await databaseRef.collection("company").insertOne({
+        name: company.trim(),
+        venture: slug,
+        createdAt: new Date(),
+      });
+      await databaseRef.createCollection("vehicles");
+      await databaseRef.createCollection("locations");
+    });
+  } catch {
+    return "failed" as const;
+  }
+  const db = await getDb();
+  await db.collection("ventures").updateOne(
+    { slug, "pools.id": poolId },
+    {
+      $push: {
+        "pools.$.clusters": {
+          id: crypto.randomUUID(),
+          company: company.trim(),
+          database,
+          createdAt: new Date(),
+        },
+      },
+    } as never,
+  );
+  return "ok" as const;
+}
+
+export async function removeCompanyCluster(slug: string, poolId: string, clusterId: string) {
+  const venture = await getVenture(slug);
+  const pool = venture?.pools.find((item) => item.id === poolId);
+  const cluster = pool?.clusters.find((item) => item.id === clusterId);
+  if (!pool || !cluster || !cluster.database.startsWith("rofyt-") || PROTECTED.has(cluster.database)) {
+    return false;
+  }
+  await withClient(pool.uri, (client) => client.db(cluster.database).dropDatabase());
+  const db = await getDb();
+  await db.collection("ventures").updateOne(
+    { slug, "pools.id": poolId },
+    { $pull: { "pools.$.clusters": { id: clusterId } } } as never,
+  );
+  return true;
+}
+
+export async function removePool(slug: string, poolId: string) {
+  const venture = await getVenture(slug);
+  const pool = venture?.pools.find((item) => item.id === poolId);
+  if (!pool || pool.clusters.length > 0) return false;
+  const db = await getDb();
+  await db.collection("ventures").updateOne({ slug }, { $pull: { pools: { id: poolId } } } as never);
+  return true;
+}
