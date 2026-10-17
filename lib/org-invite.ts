@@ -66,6 +66,7 @@ export async function inviteOrganization(
         mustChangePassword: true,
         createdAt: new Date(),
       });
+      await db.createCollection("fleets");
       await db.createCollection("vehicles");
       await db.createCollection("locations");
     });

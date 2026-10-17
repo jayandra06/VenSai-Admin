@@ -254,9 +254,14 @@ export async function pingMongo(uri: string) {
   }
 }
 
-export async function seedAdminAccount(uri: string, email: string, password: string) {
+export async function seedAdminAccount(
+  uri: string,
+  email: string,
+  password: string,
+  databaseName?: string,
+) {
   const target = describeMongoUri(uri);
-  const database = target?.database || "rofyt";
+  const database = databaseName || target?.database || "rofyt";
   if (PROTECTED.has(database)) throw new Error("protected-db");
   const hashed = hashPassword(password);
   await withClient(uri, async (client) => {
@@ -267,7 +272,9 @@ export async function seedAdminAccount(uri: string, email: string, password: str
       {
         $set: {
           email,
-          role: "admin",
+          role: "platform_admin",
+          orgCode: "0",
+          clusterId: 0,
           ...hashed,
           mustChangePassword: false,
           updatedAt: new Date(),

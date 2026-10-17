@@ -61,7 +61,8 @@ export async function seedVentureAdmin(formData: FormData) {
   const target = describeMongoUri(uri);
   if (!target || target.database === "vensai" || target.database === "admin") go(slug, "error", "protected-db");
   try {
-    const seeded = await seedAdminAccount(uri, input.adminEmail, input.adminPassword);
+    const { database } = platformDatabaseFromEnv(saved?.env ?? []);
+    const seeded = await seedAdminAccount(uri, input.adminEmail, input.adminPassword, database);
     await rememberSeed(slug, { email: input.adminEmail, ...seeded });
   } catch {
     refresh(slug);
@@ -98,7 +99,8 @@ export async function inviteVentureOrganization(formData: FormData) {
   if (!adminEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) go(slug, "error", "org-email");
   if (!phone) go(slug, "error", "org-phone");
   const venture = await getVenture(slug);
-  const loginUrl = venture?.deployedUrl?.trim() || "http://localhost:3000/login";
+  const base = venture?.deployedUrl?.trim().replace(/\/$/, "") || "http://localhost:3001";
+  const loginUrl = `${base}/erp/login`;
   const result = await inviteOrganization(slug, { organizationName, adminEmail, phone }, loginUrl);
   refresh(slug);
   if (result === "invited" || result === "invited-no-mail") go(slug, "notice", result);
