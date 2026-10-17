@@ -12,7 +12,8 @@ import { ConfirmSubmit } from "@/components/ConfirmSubmit";
 import { EnvEditor } from "@/components/EnvEditor";
 import { describeMongoUri } from "@/lib/env";
 import { listOrganizations, listPlatformClusters } from "@/lib/org-invite";
-import { ensurePlatformCluster } from "@/lib/platform-cluster";
+import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
+import { ensureVentureMongoPools } from "@/lib/platform-cluster";
 import { clusterCapacity, findPreset, getVenture, isMongoUri, pingMongo } from "@/lib/ventures";
 
 export const dynamic = "force-dynamic";
@@ -41,9 +42,9 @@ const errors: Record<string, string> = {
   "org-name": "Enter the organization name.",
   "org-email": "Enter a valid customer admin email.",
   "org-phone": "Enter the customer phone number.",
-  "no-pool": "Add at least one MongoDB URI under company clusters first.",
-  "no-capacity":
-    "No cluster slots left, or cluster 0 is missing. Save .env with MONGODB_URI and add the same Atlas host as a URI pool.",
+  "no-pool": "Save MONGODB_URI in the project .env first.",
+  "no-capacity": "No cluster slots left on the current URI pools. Add another MongoDB URI when a pool is full.",
+  "uri-default": "The project .env MongoDB URI stays in the list automatically and cannot be removed.",
   "provision-failed": "Could not create the organization database on MongoDB.",
   missing: "That MongoDB URI could not be found.",
 };
@@ -62,7 +63,7 @@ export default async function VenturePage({
   let venture = null;
   let loadError = "";
   try {
-    await ensurePlatformCluster(slug);
+    await ensureVentureMongoPools(slug);
     venture = await getVenture(slug);
   } catch {
     loadError = "Could not reach the central admin database.";
@@ -73,8 +74,10 @@ export default async function VenturePage({
   const organizations = venture ? listOrganizations(venture) : [];
   const platformClusters = venture ? listPlatformClusters(venture) : [];
 
-  const appUri = venture?.env.find((row) => row.key === "MONGODB_URI")?.value.trim() || "";
-  const appTarget = isMongoUri(appUri) ? describeMongoUri(appUri) : null;
+  const platformEnv = venture ? platformDatabaseFromEnv(venture.env) : { uri: "", database: "rofyt" };
+  const appUri = platformEnv.uri;
+  const parsedAppUri = isMongoUri(appUri) ? describeMongoUri(appUri) : null;
+  const appTarget = parsedAppUri ? { ...parsedAppUri, database: platformEnv.database } : null;
   const [appOnline, poolStatus] = await Promise.all([
     venture && appTarget ? pingMongo(appUri) : Promise.resolve(false),
     venture
@@ -301,8 +304,8 @@ export default async function VenturePage({
             <div>
               <h2 className="text-lg font-semibold text-slate-900">MongoDB URI pools</h2>
               <p className="text-sm text-slate-500">
-                Each URI holds clusters 0–699 (700 total). Cluster 0 uses the .env database; add the same Atlas host here.
-                When full, add a second URI (0–699 again).
+                The project .env MONGODB_URI is added here automatically (700 slots: cluster 0 = platform, 1–699 = customers).
+                When that URI is full, add another MongoDB URI below for the next 699 customers.
               </p>
             </div>
             <form action={addVenturePool} className="grid gap-3 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-4">
@@ -341,6 +344,7 @@ export default async function VenturePage({
               const slotsLeft = pool.freeLimit - pool.clusters.length;
               const full = slotsLeft <= 0;
               const target = describeMongoUri(pool.uri);
+              const isDefaultPool = Boolean(platformEnv.uri && poolMatchesPlatformUri(pool.uri, platformEnv.uri));
               return (
                 <article key={pool.id} className="rounded-2xl bg-white p-5 shadow-sm">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -363,10 +367,16 @@ export default async function VenturePage({
                       style={{ width: `${Math.min(100, (pool.clusters.length / pool.freeLimit) * 100)}%` }}
                     />
                   </div>
+                  {isDefaultPool ? (
+                    <p className="mt-3 text-sm text-slate-600">
+                      Synced from project .env — cluster <span className="font-mono font-semibold">0</span> is the Rofyt
+                      platform ({platformEnv.database}).
+                    </p>
+                  ) : null}
                   {full ? (
                     <p className="mt-3 text-sm text-amber-700">Free limit reached. Add another MongoDB URI to continue.</p>
                   ) : null}
-                  {!pool.clusters.length ? (
+                  {!pool.clusters.length && !isDefaultPool ? (
                     <ConfirmSubmit
                       action={deleteVenturePool}
                       fields={{ slug, poolId: pool.id }}

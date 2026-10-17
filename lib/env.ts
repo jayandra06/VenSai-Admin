@@ -34,12 +34,47 @@ export function formatEnv(rows: EnvPair[]) {
     .join("\n");
 }
 
+function mongoUriBody(uri: string) {
+  const withoutQuery = uri.split("?")[0] ?? uri;
+  const schemeEnd = withoutQuery.indexOf("://");
+  if (schemeEnd === -1) return "";
+  return withoutQuery.slice(schemeEnd + 3);
+}
+
+/** Host key for matching pools (sorted hostnames, ignores ports). */
+export function mongoUriHostKey(uri: string) {
+  const body = mongoUriBody(uri);
+  if (!body) return "";
+  const hostSection = body.includes("@") ? body.slice(body.indexOf("@") + 1) : body;
+  const hostPart = hostSection.split("/")[0] ?? "";
+  return hostPart
+    .split(",")
+    .map((entry) => entry.split(":")[0]?.trim().toLowerCase() ?? "")
+    .filter(Boolean)
+    .sort()
+    .join(",");
+}
+
+export function mongoUriDatabase(uri: string, fallback = "rofyt") {
+  const body = mongoUriBody(uri);
+  if (!body) return fallback;
+  const hostSection = body.includes("@") ? body.slice(body.indexOf("@") + 1) : body;
+  const slash = hostSection.indexOf("/");
+  if (slash === -1) return fallback;
+  const name = decodeURIComponent(hostSection.slice(slash + 1).trim());
+  return name || fallback;
+}
+
+export function mongoUriDisplayHost(uri: string) {
+  const key = mongoUriHostKey(uri);
+  if (!key) return "";
+  return key.split(",")[0] ?? key;
+}
+
 export function describeMongoUri(uri: string) {
-  try {
-    const parsed = new URL(uri);
-    const database = decodeURIComponent(parsed.pathname.replace(/^\//, "")) || "rofyt";
-    return { host: parsed.host, database };
-  } catch {
-    return null;
-  }
+  if (!/^mongodb(\+srv)?:\/\//.test(uri)) return null;
+  return {
+    host: mongoUriDisplayHost(uri),
+    database: mongoUriDatabase(uri),
+  };
 }

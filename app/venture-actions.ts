@@ -3,9 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
+import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
 import { describeMongoUri } from "@/lib/env";
 import { inviteOrganization } from "@/lib/org-invite";
-import { ensurePlatformCluster } from "@/lib/platform-cluster";
+import { ensureVentureMongoPools } from "@/lib/platform-cluster";
 import {
   addPool,
   findPreset,
@@ -41,7 +42,7 @@ export async function saveVenture(formData: FormData) {
   const input = readSettings(formData);
   if (!input.name) go(slug, "error", "name");
   await saveSettings(slug, input);
-  await ensurePlatformCluster(slug);
+  await ensureVentureMongoPools(slug);
   refresh(slug);
   go(slug, "notice", "saved");
 }
@@ -54,6 +55,7 @@ export async function seedVentureAdmin(formData: FormData) {
   if (!input.name) go(slug, "error", "name");
   if (!input.adminEmail || !input.adminPassword) go(slug, "error", "creds");
   const saved = await saveSettings(slug, input);
+  await ensureVentureMongoPools(slug);
   const uri = saved?.env.find((row) => row.key === "MONGODB_URI")?.value.trim() || "";
   if (!isMongoUri(uri)) go(slug, "error", "missing-uri");
   const target = describeMongoUri(uri);
@@ -80,7 +82,7 @@ export async function addVenturePool(formData: FormData) {
   const online = await pingMongo(uri);
   if (!online) go(slug, "error", "uri-offline");
   await addPool(slug, label, uri, freeLimit);
-  await ensurePlatformCluster(slug);
+  await ensureVentureMongoPools(slug);
   refresh(slug);
   go(slug, "notice", "uri-added");
 }
@@ -126,6 +128,12 @@ export async function deleteVenturePool(formData: FormData) {
   if (!findPreset(slug)) redirect("/dashboard/ventures");
   const venture = await getVenture(slug);
   if (!venture) redirect("/dashboard/ventures");
+  const pool = venture.pools.find((item) => item.id === poolId);
+  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
+  if (pool && platformUri && poolMatchesPlatformUri(pool.uri, platformUri)) {
+    refresh(slug);
+    go(slug, "error", "uri-default");
+  }
   const removed = await removePool(slug, poolId);
   refresh(slug);
   go(slug, removed ? "notice" : "error", removed ? "uri-removed" : "uri-busy");

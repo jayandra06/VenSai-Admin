@@ -1,7 +1,12 @@
-import { customerDatabaseName, nextCustomerClusterIndex, pickPoolWithCapacity } from "@/lib/clusters";
+import {
+  customerDatabaseName,
+  nextCustomerClusterIndex,
+  pickPoolWithCapacity,
+  poolIsPlatformPool,
+} from "@/lib/clusters";
 import { hashPassword, generateTempPassword } from "@/lib/password";
 import { sendOrganizationInvite } from "@/lib/mail";
-import { ensurePlatformCluster } from "@/lib/platform-cluster";
+import { ensureVentureMongoPools } from "@/lib/platform-cluster";
 import { getVenture, type Venture, type VentureCluster } from "@/lib/ventures";
 import { getDb } from "@/lib/db";
 import { MongoClient } from "mongodb";
@@ -21,14 +26,14 @@ export async function inviteOrganization(
   input: { organizationName: string; adminEmail: string; phone: string },
   loginUrl: string,
 ) {
-  await ensurePlatformCluster(slug);
+  await ensureVentureMongoPools(slug);
   const venture = await getVenture(slug);
   if (!venture) return "missing" as const;
   if (!venture.pools.length) return "no-pool" as const;
   const pool = pickPoolWithCapacity(venture);
   if (!pool) return "no-capacity" as const;
 
-  const clusterIndex = nextCustomerClusterIndex(pool);
+  const clusterIndex = nextCustomerClusterIndex(pool, poolIsPlatformPool(pool, venture));
   if (clusterIndex === null) return "no-capacity" as const;
 
   const orgCode = String(clusterIndex);

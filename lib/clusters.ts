@@ -1,10 +1,13 @@
-import { describeMongoUri } from "@/lib/env";
+import { mongoUriDatabase, mongoUriHostKey } from "@/lib/env";
 import type { Venture, VenturePool } from "@/lib/ventures";
+
+export const DEFAULT_POOL_LIMIT = 700;
 
 export function platformDatabaseFromEnv(env: { key: string; value: string }[]) {
   const uri = env.find((row) => row.key === "MONGODB_URI")?.value.trim() || "";
-  const target = uri ? describeMongoUri(uri) : null;
-  return { uri, database: target?.database || "rofyt" };
+  const platformDb = env.find((row) => row.key === "PLATFORM_DB")?.value.trim() || "";
+  const database = platformDb || (uri ? mongoUriDatabase(uri) : "rofyt");
+  return { uri, database };
 }
 
 export function customerDatabaseName(clusterIndex: number) {
@@ -21,32 +24,43 @@ export function poolIndices(pool: VenturePool) {
   return pool.clusters.map((item) => clusterIndexOf(item)).filter((n): n is number => n !== null);
 }
 
-export function nextCustomerClusterIndex(pool: VenturePool) {
+export function nextCustomerClusterIndex(pool: VenturePool, isPlatformPool: boolean) {
   const indices = poolIndices(pool);
-  if (!indices.includes(0)) return null;
-  const max = indices.length ? Math.max(...indices) : 0;
-  const next = max + 1;
+  if (isPlatformPool) {
+    if (!indices.includes(0)) return null;
+    const max = indices.length ? Math.max(...indices) : 0;
+    const next = max + 1;
+    if (next >= pool.freeLimit) return null;
+    return next;
+  }
+  const customer = indices.filter((n) => n >= 1);
+  const next = customer.length ? Math.max(...customer) + 1 : 1;
   if (next >= pool.freeLimit) return null;
   return next;
 }
 
-export function poolHasCapacity(pool: VenturePool) {
-  return pool.clusters.length < pool.freeLimit && nextCustomerClusterIndex(pool) !== null;
+export function poolHasCapacity(pool: VenturePool, isPlatformPool: boolean) {
+  return pool.clusters.length < pool.freeLimit && nextCustomerClusterIndex(pool, isPlatformPool) !== null;
+}
+
+export function poolIsPlatformPool(pool: VenturePool, venture: Venture) {
+  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
+  return Boolean(platformUri && poolMatchesPlatformUri(pool.uri, platformUri));
 }
 
 export function pickPoolWithCapacity(venture: Venture) {
-  return venture.pools.find((pool) => poolHasCapacity(pool)) ?? null;
+  return (
+    venture.pools.find((pool) => poolHasCapacity(pool, poolIsPlatformPool(pool, venture))) ?? null
+  );
 }
 
 export function normalizeUriHost(uri: string) {
-  try {
-    return new URL(uri).host;
-  } catch {
-    return "";
-  }
+  return mongoUriHostKey(uri);
 }
 
 export function poolMatchesPlatformUri(poolUri: string, platformUri: string) {
   if (!poolUri || !platformUri) return false;
-  return normalizeUriHost(poolUri) === normalizeUriHost(platformUri);
+  const a = mongoUriHostKey(poolUri);
+  const b = mongoUriHostKey(platformUri);
+  return Boolean(a && b && a === b);
 }
