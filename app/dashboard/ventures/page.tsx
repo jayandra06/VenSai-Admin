@@ -34,8 +34,15 @@ export default async function VenturesPage() {
             <h2 className="mt-4 text-lg font-semibold text-slate-900">{venture.name}</h2>
             <p className="mt-1 text-sm text-slate-500">{venture.summary}</p>
             <p className="mt-4 text-sm text-slate-600">
-              {venture.uris} MongoDB URIs · {venture.clusters} company clusters
+              {venture.customers} customers · {venture.clusters} / {venture.clusterLimit} clusters · {venture.clusterFree}{" "}
+              free · {venture.uris} MongoDB URIs
             </p>
+            {venture.clusterIds.length ? (
+              <p className="mt-2 font-mono text-xs text-slate-500">
+                Cluster IDs: {venture.clusterIds.slice(0, 8).join(", ")}
+                {venture.clusterIds.length > 8 ? ` +${venture.clusterIds.length - 8} more` : ""}
+              </p>
+            ) : null}
           </Link>
         ))}
       </section>

@@ -1,7 +1,7 @@
 import { MongoClient } from "mongodb";
-import { randomBytes, scryptSync } from "crypto";
 import { getDb } from "@/lib/db";
 import { describeMongoUri, type EnvPair } from "@/lib/env";
+import { hashPassword } from "@/lib/password";
 
 export const VENTURES = [
   {
@@ -13,9 +13,15 @@ export const VENTURES = [
 
 export type VentureCluster = {
   id: string;
-  company: string;
+  orgCode: string;
+  organizationName: string;
+  adminEmail: string;
+  phone: string;
   database: string;
   createdAt: string;
+  emailSentAt: string | null;
+  /** @deprecated legacy manual clusters */
+  company?: string;
 };
 
 export type VenturePool = {
@@ -36,6 +42,12 @@ export type Venture = {
   pools: VenturePool[];
   lastSeed: { email: string; database: string; host: string; at: string } | null;
 };
+
+export function clusterCapacity(venture: Venture) {
+  const limit = venture.pools.reduce((sum, pool) => sum + pool.freeLimit, 0);
+  const used = venture.pools.reduce((sum, pool) => sum + pool.clusters.length, 0);
+  return { used, limit, free: Math.max(0, limit - used) };
+}
 
 const PROTECTED = new Set(["admin", "local", "config", "vensai"]);
 
@@ -73,11 +85,18 @@ function mapVenture(preset: (typeof VENTURES)[number], doc: Record<string, unkno
           ? item.clusters.map((cluster) => {
               const row = cluster as Record<string, unknown>;
               const created = row.createdAt instanceof Date ? row.createdAt : new Date();
+              const orgCode = asString(row.orgCode) || (/^\d{6}$/.test(asString(row.id)) ? asString(row.id) : "");
+              const legacyName = asString(row.company);
               return {
                 id: asString(row.id),
-                company: asString(row.company),
+                orgCode,
+                organizationName: asString(row.organizationName) || legacyName,
+                adminEmail: asString(row.adminEmail),
+                phone: asString(row.phone),
                 database: asString(row.database),
                 createdAt: created.toISOString(),
+                emailSentAt: asString(row.emailSentAt) || null,
+                company: legacyName || undefined,
               };
             })
           : [];
@@ -124,8 +143,22 @@ export async function listVentures() {
   return VENTURES.map((preset) => {
     const doc = docs.find((item) => item.slug === preset.slug) ?? null;
     const venture = mapVenture(preset, doc as Record<string, unknown> | null);
-    const clusters = venture.pools.reduce((sum, pool) => sum + pool.clusters.length, 0);
-    return { ...preset, uris: venture.pools.length, clusters };
+    const capacity = clusterCapacity(venture);
+    const customerClusters = venture.pools.flatMap((pool) =>
+      pool.clusters.filter((cluster) => cluster.orgCode !== "0" && cluster.id !== "0"),
+    );
+    const clusterIds = customerClusters
+      .map((cluster) => cluster.orgCode || cluster.id)
+      .sort((a, b) => Number(a) - Number(b));
+    return {
+      ...preset,
+      uris: venture.pools.length,
+      clusters: capacity.used,
+      clusterLimit: capacity.limit,
+      clusterFree: capacity.free,
+      customers: customerClusters.length,
+      clusterIds,
+    };
   });
 }
 
@@ -224,8 +257,7 @@ export async function seedAdminAccount(uri: string, email: string, password: str
   const target = describeMongoUri(uri);
   const database = target?.database || "rofyt";
   if (PROTECTED.has(database)) throw new Error("protected-db");
-  const salt = randomBytes(16).toString("hex");
-  const passwordHash = scryptSync(password, salt, 32).toString("hex");
+  const hashed = hashPassword(password);
   await withClient(uri, async (client) => {
     const admins = client.db(database).collection("admins");
     await admins.createIndex({ email: 1 }, { unique: true });
@@ -235,9 +267,8 @@ export async function seedAdminAccount(uri: string, email: string, password: str
         $set: {
           email,
           role: "admin",
-          passwordHash,
-          passwordSalt: salt,
-          passwordAlgo: "scrypt",
+          ...hashed,
+          mustChangePassword: false,
           updatedAt: new Date(),
         },
         $setOnInsert: { createdAt: new Date() },
@@ -292,7 +323,14 @@ export async function createCompanyCluster(slug: string, poolId: string, company
   if (pool.clusters.length >= pool.freeLimit) return "limit" as const;
   const database = companyDatabase(company);
   if (!database) return "company" as const;
-  if (pool.clusters.some((item) => item.database === database || item.company.toLowerCase() === company.toLowerCase())) {
+  if (
+    pool.clusters.some(
+      (item) =>
+        item.database === database ||
+        item.organizationName.toLowerCase() === company.toLowerCase() ||
+        item.company?.toLowerCase() === company.toLowerCase(),
+    )
+  ) {
     return "duplicate" as const;
   }
   try {
@@ -326,11 +364,20 @@ export async function createCompanyCluster(slug: string, poolId: string, company
   return "ok" as const;
 }
 
+function removableDatabase(database: string) {
+  if (PROTECTED.has(database)) return false;
+  if (/^rofyt-\d+$/.test(database)) return true;
+  return database.startsWith("rofyt-");
+}
+
 export async function removeCompanyCluster(slug: string, poolId: string, clusterId: string) {
   const venture = await getVenture(slug);
   const pool = venture?.pools.find((item) => item.id === poolId);
   const cluster = pool?.clusters.find((item) => item.id === clusterId);
-  if (!pool || !cluster || !cluster.database.startsWith("rofyt-") || PROTECTED.has(cluster.database)) {
+  if (!pool || !cluster || cluster.orgCode === "0" || cluster.id === "0") {
+    return false;
+  }
+  if (!removableDatabase(cluster.database)) {
     return false;
   }
   await withClient(pool.uri, (client) => client.db(cluster.database).dropDatabase());

@@ -2,16 +2,18 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   addVenturePool,
-  createVentureCluster,
   deleteVentureCluster,
   deleteVenturePool,
+  inviteVentureOrganization,
   saveVenture,
   seedVentureAdmin,
 } from "@/app/venture-actions";
 import { ConfirmSubmit } from "@/components/ConfirmSubmit";
 import { EnvEditor } from "@/components/EnvEditor";
 import { describeMongoUri } from "@/lib/env";
-import { findPreset, getVenture, isMongoUri, pingMongo } from "@/lib/ventures";
+import { listOrganizations, listPlatformClusters } from "@/lib/org-invite";
+import { ensurePlatformCluster } from "@/lib/platform-cluster";
+import { clusterCapacity, findPreset, getVenture, isMongoUri, pingMongo } from "@/lib/ventures";
 
 export const dynamic = "force-dynamic";
 
@@ -19,26 +21,31 @@ const notices: Record<string, string> = {
   saved: "Settings saved.",
   seeded: "Admin account seeded into the Rofyt database.",
   "uri-added": "MongoDB URI added.",
-  "cluster-created": "Company cluster created and assigned to Rofyt.",
-  "cluster-removed": "Company cluster removed.",
+  "cluster-removed": "Organization cluster removed.",
   "uri-removed": "MongoDB URI removed.",
+  invited: "Invitation sent. Org code, email, and temporary password were emailed to the customer admin.",
+  "invited-no-mail":
+    "Organization created and cluster assigned. Email was not sent — configure SMTP under Settings.",
 };
 
 const errors: Record<string, string> = {
   name: "Enter the project name.",
-  company: "Enter a company name.",
   creds: "Enter the admin email and password before seeding.",
   "missing-uri": "Add MONGODB_URI in the project .env. That database is where the admin is seeded.",
   "protected-db": "Point MONGODB_URI at a Rofyt database, not the central admin database.",
   "seed-failed": "Could not seed the admin. Check the MongoDB URI and Atlas network access.",
   "uri-invalid": "Use a mongodb:// or mongodb+srv:// connection string.",
   "uri-offline": "That MongoDB URI did not connect.",
-  limit: "This URI has reached its free cluster limit. Add another MongoDB URI.",
-  duplicate: "That company already has a cluster on this URI.",
-  failed: "Could not create the company database on that URI.",
+  "cluster-remove": "Could not remove that organization cluster.",
+  "uri-busy": "Remove the organizations on this URI before removing it.",
+  "org-name": "Enter the organization name.",
+  "org-email": "Enter a valid customer admin email.",
+  "org-phone": "Enter the customer phone number.",
+  "no-pool": "Add at least one MongoDB URI under company clusters first.",
+  "no-capacity":
+    "No cluster slots left, or cluster 0 is missing. Save .env with MONGODB_URI and add the same Atlas host as a URI pool.",
+  "provision-failed": "Could not create the organization database on MongoDB.",
   missing: "That MongoDB URI could not be found.",
-  "cluster-remove": "Could not remove that company cluster.",
-  "uri-busy": "Remove the company clusters before removing this URI.",
 };
 
 export default async function VenturePage({
@@ -55,11 +62,16 @@ export default async function VenturePage({
   let venture = null;
   let loadError = "";
   try {
+    await ensurePlatformCluster(slug);
     venture = await getVenture(slug);
   } catch {
     loadError = "Could not reach the central admin database.";
   }
   if (!venture && !loadError) notFound();
+
+  const capacity = venture ? clusterCapacity(venture) : { used: 0, limit: 0, free: 0 };
+  const organizations = venture ? listOrganizations(venture) : [];
+  const platformClusters = venture ? listPlatformClusters(venture) : [];
 
   const appUri = venture?.env.find((row) => row.key === "MONGODB_URI")?.value.trim() || "";
   const appTarget = isMongoUri(appUri) ? describeMongoUri(appUri) : null;
@@ -80,6 +92,11 @@ export default async function VenturePage({
         </Link>
         <h1 className="mt-2 text-2xl font-semibold text-slate-900">{preset.name}</h1>
         <p className="text-sm text-slate-500">{preset.summary}</p>
+        {venture ? (
+          <p className="mt-2 text-sm font-medium text-slate-700">
+            Clusters: {capacity.used} / {capacity.limit} used · {capacity.free} free (0 = Rofyt platform, 1+ = customers)
+          </p>
+        ) : null}
       </div>
       {loadError ? (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{loadError}</p>
@@ -130,7 +147,7 @@ export default async function VenturePage({
               </div>
             </section>
             <section className="rounded-2xl bg-white p-5 shadow-sm">
-              <h2 className="font-semibold text-slate-900">Admin account</h2>
+              <h2 className="font-semibold text-slate-900">Platform admin (Rofyt app)</h2>
               <p className="mt-1 text-sm text-slate-500">
                 Seed writes this admin into the database named on MONGODB_URI. The central portal database stays separate.
               </p>
@@ -179,11 +196,113 @@ export default async function VenturePage({
               </div>
             </section>
           </form>
+
+          <section className="rounded-2xl bg-white p-5 shadow-sm">
+            <h2 className="font-semibold text-slate-900">Invite organization</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Assigns the next cluster ID (1, 2, 3… per URI, up to 699 customers after cluster 0). Database name is
+              rofyt-N (e.g. rofyt-1). Emails org code, login, and temporary password. First login must reset password.
+            </p>
+            <form action={inviteVentureOrganization} className="mt-4 grid gap-3 md:grid-cols-2">
+              <input type="hidden" name="slug" value={slug} />
+              <label className="text-sm font-medium text-slate-700 md:col-span-2">
+                Organization name
+                <input
+                  name="organizationName"
+                  required
+                  placeholder="Harbor Cars Rental"
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 outline-none focus:border-[#3C50E0]"
+                />
+              </label>
+              <label className="text-sm font-medium text-slate-700">
+                Customer admin email
+                <input
+                  name="adminEmail"
+                  type="email"
+                  required
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 outline-none focus:border-[#3C50E0]"
+                />
+              </label>
+              <label className="text-sm font-medium text-slate-700">
+                Phone
+                <input
+                  name="phone"
+                  required
+                  placeholder="+91 ..."
+                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 outline-none focus:border-[#3C50E0]"
+                />
+              </label>
+              <button className="rounded-lg bg-[#3C50E0] px-4 py-2.5 text-sm font-medium text-white md:col-span-2 md:w-fit">
+                Send invitation
+              </button>
+            </form>
+          </section>
+
+          <section className="overflow-hidden rounded-2xl bg-white shadow-sm">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <h2 className="font-semibold text-slate-900">Organizations</h2>
+              <p className="text-sm text-slate-500">
+                Cluster 0 is the platform DB from MONGODB_URI. Each customer gets the next ID (1, 2, …) on that URI pool.
+              </p>
+            </div>
+            {!organizations.length ? (
+              <p className="px-5 py-8 text-sm text-slate-500">No organizations yet. Send the first invitation above.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-slate-100 text-xs uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="px-5 py-3 font-medium">Cluster ID</th>
+                      <th className="px-5 py-3 font-medium">Organization</th>
+                      <th className="px-5 py-3 font-medium">Admin email</th>
+                      <th className="px-5 py-3 font-medium">Phone</th>
+                      <th className="px-5 py-3 font-medium">MongoDB database</th>
+                      <th className="px-5 py-3 font-medium">URI pool</th>
+                      <th className="px-5 py-3 font-medium">Email</th>
+                      <th className="px-5 py-3 font-medium" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {organizations.map((org) => (
+                      <tr key={`${org.poolId}-${org.id}`} className="border-b border-slate-50 last:border-0">
+                        <td className="px-5 py-3 font-mono font-semibold text-slate-900">{org.orgCode || org.id}</td>
+                        <td className="px-5 py-3 text-slate-800">{org.organizationName || org.company}</td>
+                        <td className="px-5 py-3 text-slate-600">{org.adminEmail || "—"}</td>
+                        <td className="px-5 py-3 text-slate-600">{org.phone || "—"}</td>
+                        <td className="px-5 py-3 font-mono text-slate-600">{org.database}</td>
+                        <td className="px-5 py-3 text-slate-500">{org.poolLabel}</td>
+                        <td className="px-5 py-3">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                              org.emailSentAt ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                            }`}
+                          >
+                            {org.emailSentAt ? "Sent" : "Not sent"}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3 text-right">
+                          <ConfirmSubmit
+                            action={deleteVentureCluster}
+                            fields={{ slug, poolId: org.poolId, clusterId: org.id }}
+                            label="Remove"
+                            message={`Remove ${org.organizationName || org.orgCode} and drop database ${org.database}?`}
+                            className="text-sm font-medium text-rose-600"
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
           <section className="space-y-4">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900">Company clusters</h2>
+              <h2 className="text-lg font-semibold text-slate-900">MongoDB URI pools</h2>
               <p className="text-sm text-slate-500">
-                Add a MongoDB URI and set how many free company databases it can hold. Each car rental company gets one database. When a URI is full, add another URI.
+                Each URI holds clusters 0–699 (700 total). Cluster 0 uses the .env database; add the same Atlas host here.
+                When full, add a second URI (0–699 again).
               </p>
             </div>
             <form action={addVenturePool} className="grid gap-3 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-4">
@@ -212,8 +331,15 @@ export default async function VenturePage({
                 Add MongoDB URI
               </button>
             </form>
+            {platformClusters.length ? (
+              <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                Platform cluster <span className="font-mono font-semibold">0</span> → database{" "}
+                <span className="font-mono">{platformClusters[0]?.database}</span> on {platformClusters[0]?.poolLabel}
+              </p>
+            ) : null}
             {venture.pools.map((pool) => {
-              const full = pool.clusters.length >= pool.freeLimit;
+              const slotsLeft = pool.freeLimit - pool.clusters.length;
+              const full = slotsLeft <= 0;
               const target = describeMongoUri(pool.uri);
               return (
                 <article key={pool.id} className="rounded-2xl bg-white p-5 shadow-sm">
@@ -224,9 +350,12 @@ export default async function VenturePage({
                         {target ? target.host : "URI saved"} · {onlineById.get(pool.id) ? "Connected" : "Offline"}
                       </p>
                     </div>
-                    <p className="text-sm font-medium text-slate-700">
-                      {pool.clusters.length} / {pool.freeLimit}
-                    </p>
+                    <div className="text-right text-sm">
+                      <p className="font-semibold text-slate-900">
+                        {pool.clusters.length} / {pool.freeLimit} used
+                      </p>
+                      <p className="text-slate-500">{slotsLeft} free</p>
+                    </div>
                   </div>
                   <div className="mt-3 h-2 rounded-full bg-slate-100">
                     <div
@@ -236,46 +365,14 @@ export default async function VenturePage({
                   </div>
                   {full ? (
                     <p className="mt-3 text-sm text-amber-700">Free limit reached. Add another MongoDB URI to continue.</p>
-                  ) : (
-                    <form action={createVentureCluster} className="mt-4 flex flex-wrap gap-2">
-                      <input type="hidden" name="slug" value={slug} />
-                      <input type="hidden" name="poolId" value={pool.id} />
-                      <input
-                        name="company"
-                        required
-                        placeholder="Car rental company"
-                        className="min-w-56 flex-1 rounded-lg border border-slate-200 px-3 py-2.5 outline-none focus:border-[#3C50E0]"
-                      />
-                      <button className="rounded-lg bg-[#3C50E0] px-4 py-2.5 text-sm font-medium text-white">
-                        Create cluster
-                      </button>
-                    </form>
-                  )}
-                  <div className="mt-4 divide-y divide-slate-100">
-                    {pool.clusters.map((cluster) => (
-                      <div key={cluster.id} className="flex items-center justify-between gap-3 py-3 text-sm">
-                        <div>
-                          <p className="font-medium text-slate-800">{cluster.company}</p>
-                          <p className="text-slate-500">{cluster.database}</p>
-                        </div>
-                        <ConfirmSubmit
-                          action={deleteVentureCluster}
-                          fields={{ slug, poolId: pool.id, clusterId: cluster.id }}
-                          label="Remove"
-                          message={`Remove ${cluster.company} and its database?`}
-                          className="text-sm font-medium text-rose-600"
-                        />
-                      </div>
-                    ))}
-                    {!pool.clusters.length ? <p className="py-3 text-sm text-slate-500">No companies on this URI yet.</p> : null}
-                  </div>
+                  ) : null}
                   {!pool.clusters.length ? (
                     <ConfirmSubmit
                       action={deleteVenturePool}
                       fields={{ slug, poolId: pool.id }}
                       label="Remove URI"
                       message="Remove this MongoDB URI?"
-                      className="text-sm font-medium text-rose-600"
+                      className="mt-4 text-sm font-medium text-rose-600"
                     />
                   ) : null}
                 </article>

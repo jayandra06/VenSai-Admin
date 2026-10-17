@@ -48,16 +48,39 @@ export async function loadRecords(limit = 100) {
   return { ok: true as const, total, open, records: docs.map(mapDoc) };
 }
 
+function mongoErrorMessage(error: unknown) {
+  if (!uri) {
+    return "MONGODB_URI is not set on this server. In Vercel (or your host), add MONGODB_URI under Project → Settings → Environment Variables, then redeploy.";
+  }
+  const message = error instanceof Error ? error.message : "";
+  if (/authentication failed|bad auth|Invalid credentials/i.test(message)) {
+    return "MongoDB rejected the username or password. Update MONGODB_URI in your hosting environment.";
+  }
+  if (/timed out|Server selection|ECONNREFUSED|ENOTFOUND/i.test(message)) {
+    return "Could not reach MongoDB. In Atlas → Network Access, allow access from anywhere (0.0.0.0/0) or your host’s IPs, then confirm the connection string.";
+  }
+  return "Could not reach MongoDB. Check MONGODB_URI and Atlas network access, then redeploy.";
+}
+
 export async function safeLoad(limit = 100) {
-  try {
-    return await loadRecords(limit);
-  } catch {
+  if (!uri) {
     return {
       ok: false as const,
       total: 0,
       open: 0,
       records: [] as PortalRecord[],
-      error: "Could not reach MongoDB. Check the connection string and Atlas network access.",
+      error: mongoErrorMessage(null),
+    };
+  }
+  try {
+    return await loadRecords(limit);
+  } catch (error) {
+    return {
+      ok: false as const,
+      total: 0,
+      open: 0,
+      records: [] as PortalRecord[],
+      error: mongoErrorMessage(error),
     };
   }
 }

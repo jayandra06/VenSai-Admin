@@ -4,9 +4,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { describeMongoUri } from "@/lib/env";
+import { inviteOrganization } from "@/lib/org-invite";
+import { ensurePlatformCluster } from "@/lib/platform-cluster";
 import {
   addPool,
-  createCompanyCluster,
   findPreset,
   getVenture,
   isMongoUri,
@@ -40,6 +41,7 @@ export async function saveVenture(formData: FormData) {
   const input = readSettings(formData);
   if (!input.name) go(slug, "error", "name");
   await saveSettings(slug, input);
+  await ensurePlatformCluster(slug);
   refresh(slug);
   go(slug, "notice", "saved");
 }
@@ -78,19 +80,26 @@ export async function addVenturePool(formData: FormData) {
   const online = await pingMongo(uri);
   if (!online) go(slug, "error", "uri-offline");
   await addPool(slug, label, uri, freeLimit);
+  await ensurePlatformCluster(slug);
   refresh(slug);
   go(slug, "notice", "uri-added");
 }
 
-export async function createVentureCluster(formData: FormData) {
+export async function inviteVentureOrganization(formData: FormData) {
   await requireUser();
   const slug = String(formData.get("slug") || "");
-  const poolId = String(formData.get("poolId") || "");
-  const company = String(formData.get("company") || "").trim();
   if (!findPreset(slug)) redirect("/dashboard/ventures");
-  const result = await createCompanyCluster(slug, poolId, company);
+  const organizationName = String(formData.get("organizationName") || "").trim();
+  const adminEmail = String(formData.get("adminEmail") || "").trim().toLowerCase();
+  const phone = String(formData.get("phone") || "").trim();
+  if (!organizationName) go(slug, "error", "org-name");
+  if (!adminEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) go(slug, "error", "org-email");
+  if (!phone) go(slug, "error", "org-phone");
+  const venture = await getVenture(slug);
+  const loginUrl = venture?.deployedUrl?.trim() || "http://localhost:3000/login";
+  const result = await inviteOrganization(slug, { organizationName, adminEmail, phone }, loginUrl);
   refresh(slug);
-  if (result === "ok") go(slug, "notice", "cluster-created");
+  if (result === "invited" || result === "invited-no-mail") go(slug, "notice", result);
   go(slug, "error", result);
 }
 
