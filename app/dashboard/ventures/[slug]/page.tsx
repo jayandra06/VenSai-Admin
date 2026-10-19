@@ -9,7 +9,9 @@ import {
   seedVentureAdmin,
 } from "@/app/venture-actions";
 import { ConfirmSubmit } from "@/components/ConfirmSubmit";
+import { DeployEnvPreview } from "@/components/DeployEnvPreview";
 import { EnvEditor } from "@/components/EnvEditor";
+import { buildAdminDatabaseFromEnv, mergeDeployEnv } from "@/lib/venture-record";
 import { describeMongoUri } from "@/lib/env";
 import { listOrganizations, listPlatformClusters } from "@/lib/org-invite";
 import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
@@ -53,6 +55,8 @@ const errors: Record<string, string> = {
   "org-email-taken":
     "That admin email already exists in the tenant database for this cluster (e.g. rofyt-1). Use a different email, or remove that organization row below and drop the database in Atlas.",
   missing: "That MongoDB URI could not be found.",
+  "uri-duplicate-host":
+    "That Atlas host is already in the URI pool list. Customer slots 1–699 share the first pool; add a different cluster host when the first pool is full.",
 };
 
 export default async function VenturePage({
@@ -98,6 +102,16 @@ export default async function VenturePage({
           (pool) => !poolMatchesPlatformUri(pool.uri, platformEnv.uri) && pool.clusters.length > 0,
         )
       : [];
+  const adminDb =
+    venture?.adminDatabase ?? (venture ? buildAdminDatabaseFromEnv(venture.env) : null);
+  const deployEnv =
+    venture
+      ? mergeDeployEnv({
+          env: venture.env,
+          clientPortalUrl: venture.clientPortalUrl || venture.deployedUrl,
+          adminPortalUrl: venture.adminPortalUrl,
+        })
+      : [];
 
   return (
     <div className="space-y-6">
@@ -109,9 +123,16 @@ export default async function VenturePage({
         <p className="text-sm text-slate-500">{preset.summary}</p>
         {venture ? (
           <p className="mt-2 text-sm font-medium text-slate-700">
-            Clusters: {capacity.used} / {capacity.limit} used · {capacity.free} free (0 = Rofyt platform, 1+ = customers)
+            Clusters: {capacity.used} / {capacity.limit} used · {capacity.free} free (0 = venture admin DB, 1+ = customers)
           </p>
         ) : null}
+        <p className="mt-3 max-w-3xl text-sm text-slate-600">
+          <span className="font-medium text-slate-800">VenSai Admin</span> stores this venture in the central{" "}
+          <span className="font-mono">vensai</span> database.{" "}
+          <span className="font-medium text-slate-800">Rofyt</span> uses its own{" "}
+          <span className="font-mono">adminDatabase</span> (cluster 0) plus URI pools for customer databases on the same
+          Atlas host until you add the next URI.
+        </p>
       </div>
       {loadError ? (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{loadError}</p>
@@ -150,31 +171,65 @@ export default async function VenturePage({
                   />
                 </label>
                 <label className="text-sm font-medium text-slate-700">
-                  Deployed URL
+                  Client portal URL (ERP / tenants)
                   <input
-                    name="deployedUrl"
-                    defaultValue={venture.deployedUrl}
-                    placeholder="https://rofyt.example"
+                    name="clientPortalUrl"
+                    defaultValue={venture.clientPortalUrl || venture.deployedUrl}
+                    placeholder="https://rofyt.vensailabs.in"
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 outline-none focus:border-[#3C50E0]"
+                  />
+                </label>
+                <label className="text-sm font-medium text-slate-700 md:col-span-2">
+                  Venture admin portal URL (platform owner)
+                  <input
+                    name="adminPortalUrl"
+                    defaultValue={venture.adminPortalUrl}
+                    placeholder="https://admin-rofyt.vensailabs.in"
                     className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2.5 outline-none focus:border-[#3C50E0]"
                   />
                 </label>
               </div>
-              <div className="mt-5">
-                <h3 className="font-medium text-slate-900">Project .env</h3>
-                <p className="mt-1 text-sm text-slate-500">
-                  Paste the whole file, split it into fields, or copy it back as one .env. Use the same Atlas cluster as
-                  the admin portal with database <span className="font-mono">rofyt</span> (not <span className="font-mono">vensai</span>
-                  ).
-                </p>
-                <div className="mt-3">
-                  <EnvEditor pairs={venture.env} />
-                </div>
+            </section>
+            <section className="rounded-2xl border border-[#3C50E0]/20 bg-[#3C50E0]/5 p-5 shadow-sm">
+              <h2 className="font-semibold text-slate-900">Venture admin database (cluster 0)</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Saved in the central <span className="font-mono">vensai</span> DB as{" "}
+                <span className="font-mono">adminDatabase</span>. Seed creates the platform admin here — not in{" "}
+                <span className="font-mono">vensai</span>. Customer orgs use cluster 1+ on the URI pools below.
+              </p>
+              {adminDb ? (
+                <dl className="mt-4 grid gap-2 text-sm md:grid-cols-2">
+                  <div>
+                    <dt className="text-slate-500">MongoDB database</dt>
+                    <dd className="font-mono font-medium text-slate-900">{adminDb.database}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-slate-500">Atlas host</dt>
+                    <dd className="font-mono text-slate-800">{adminDb.host || appTarget?.host || "—"}</dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="mt-3 text-sm text-amber-800">Set MONGODB_URI in the project .env (database rofyt) and save.</p>
+              )}
+            </section>
+            <section className="rounded-2xl bg-white p-5 shadow-sm">
+              <h2 className="font-semibold text-slate-900">Project .env</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Stored in VenSai and copied to Rofyt&apos;s server. Use Atlas Cluster0 with{" "}
+                <span className="font-mono">/rofyt</span> — same host as the portal, different database than{" "}
+                <span className="font-mono">/vensai</span>.
+              </p>
+              <div className="mt-3">
+                <EnvEditor pairs={venture.env} />
+              </div>
+              <div className="mt-4">
+                <DeployEnvPreview rows={deployEnv} />
               </div>
             </section>
             <section className="rounded-2xl bg-white p-5 shadow-sm">
-              <h2 className="font-semibold text-slate-900">Platform admin (Rofyt app)</h2>
+              <h2 className="font-semibold text-slate-900">Platform admin (seed into admin DB)</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Seed writes this admin into the database named on MONGODB_URI. The central portal database stays separate.
+                Writes the Rofyt platform owner into the venture admin database (cluster 0).
               </p>
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <label className="text-sm font-medium text-slate-700">
@@ -326,8 +381,9 @@ export default async function VenturePage({
             <div>
               <h2 className="text-lg font-semibold text-slate-900">MongoDB URI pools</h2>
               <p className="text-sm text-slate-500">
-                The project .env MONGODB_URI is added here automatically (700 slots: cluster 0 = platform, 1–699 = customers).
-                When that URI is full, add another MongoDB URI below for the next 699 customers.
+                The project .env URI becomes pool #1 (700 slots: cluster 0 = admin DB, customers get 1, 2, 3… on the same
+                URI). When 699 customers are used on that host, add a <strong>different</strong> MongoDB URI for the next
+                batch — do not duplicate the same Atlas host.
               </p>
             </div>
             <form action={addVenturePool} className="grid gap-3 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-4">

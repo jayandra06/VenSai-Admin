@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
-import { describeMongoUri } from "@/lib/env";
+import { describeMongoUri, mongoUriHostKey } from "@/lib/env";
 import { inviteOrganization } from "@/lib/org-invite";
 import { ensureVentureMongoPools } from "@/lib/platform-cluster";
 import {
@@ -80,6 +80,11 @@ export async function addVenturePool(formData: FormData) {
   const label = String(formData.get("label") || "").trim();
   const freeLimit = Math.min(10000, Math.max(1, Number(formData.get("freeLimit")) || 700));
   if (!isMongoUri(uri)) go(slug, "error", "uri-invalid");
+  const venture = await getVenture(slug);
+  const host = mongoUriHostKey(uri);
+  if (venture && host && venture.pools.some((p) => mongoUriHostKey(p.uri) === host)) {
+    go(slug, "error", "uri-duplicate-host");
+  }
   const online = await pingMongo(uri);
   if (!online) go(slug, "error", "uri-offline");
   await addPool(slug, label, uri, freeLimit);
@@ -99,7 +104,10 @@ export async function inviteVentureOrganization(formData: FormData) {
   if (!adminEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) go(slug, "error", "org-email");
   if (!phone) go(slug, "error", "org-phone");
   const venture = await getVenture(slug);
-  const base = venture?.deployedUrl?.trim().replace(/\/$/, "") || "http://localhost:3001";
+  const base =
+    venture?.clientPortalUrl?.trim().replace(/\/$/, "") ||
+    venture?.deployedUrl?.trim().replace(/\/$/, "") ||
+    "http://localhost:3001";
   const loginUrl = `${base}/erp/login`;
   const result = await inviteOrganization(slug, { organizationName, adminEmail, phone }, loginUrl);
   refresh(slug);

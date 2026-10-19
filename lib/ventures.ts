@@ -3,6 +3,11 @@ import { getDb } from "@/lib/db";
 import { describeMongoUri, type EnvPair } from "@/lib/env";
 import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
 import { hashPassword } from "@/lib/password";
+import {
+  buildAdminDatabaseFromEnv,
+  mergeDeployEnv,
+  type VentureAdminDatabase,
+} from "@/lib/venture-record";
 
 export const VENTURES = [
   {
@@ -36,7 +41,12 @@ export type VenturePool = {
 export type Venture = {
   slug: string;
   name: string;
+  /** @deprecated use clientPortalUrl */
   deployedUrl: string;
+  clientPortalUrl: string;
+  adminPortalUrl: string;
+  /** Venture platform DB (cluster 0) — stored in central vensai DB for seeding. */
+  adminDatabase: VentureAdminDatabase | null;
   env: EnvPair[];
   adminEmail: string;
   adminPassword: string;
@@ -57,6 +67,9 @@ function blank(preset: (typeof VENTURES)[number]): Venture {
     slug: preset.slug,
     name: preset.name,
     deployedUrl: "",
+    clientPortalUrl: "",
+    adminPortalUrl: "",
+    adminDatabase: null,
     env: [],
     adminEmail: "",
     adminPassword: "",
@@ -111,10 +124,25 @@ function mapVenture(preset: (typeof VENTURES)[number], doc: Record<string, unkno
       })
     : [];
   const seed = doc.lastSeed as Record<string, unknown> | null;
+  const clientPortalUrl = asString(doc.clientPortalUrl) || asString(doc.deployedUrl);
+  const adminPortalUrl = asString(doc.adminPortalUrl);
+  const adminRaw = doc.adminDatabase as Record<string, unknown> | null;
+  const adminDatabase =
+    adminRaw && asString(adminRaw.uri)
+      ? {
+          uri: asString(adminRaw.uri),
+          database: asString(adminRaw.database) || "rofyt",
+          host: asString(adminRaw.host),
+          updatedAt: asString(adminRaw.updatedAt),
+        }
+      : null;
   return {
     slug: preset.slug,
     name: asString(doc.name) || preset.name,
-    deployedUrl: asString(doc.deployedUrl),
+    deployedUrl: clientPortalUrl,
+    clientPortalUrl,
+    adminPortalUrl,
+    adminDatabase,
     env,
     adminEmail: asString(doc.adminEmail),
     adminPassword: asString(doc.adminPassword),
@@ -200,12 +228,17 @@ export function readSettings(formData: FormData) {
   const env = keys
     .map((key, index) => ({ key, value: values[index] ?? "" }))
     .filter((row) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(row.key));
+  const clientPortalUrl = String(formData.get("clientPortalUrl") || formData.get("deployedUrl") || "").trim();
+  const adminPortalUrl = String(formData.get("adminPortalUrl") || "").trim();
+  const mergedEnv = mergeDeployEnv({ env, clientPortalUrl, adminPortalUrl });
   return {
     name: String(formData.get("name") || "").trim(),
-    deployedUrl: String(formData.get("deployedUrl") || "").trim(),
+    deployedUrl: clientPortalUrl,
+    clientPortalUrl,
+    adminPortalUrl,
     adminEmail: String(formData.get("adminEmail") || "").trim(),
     adminPassword: String(formData.get("adminPassword") || ""),
-    env,
+    env: mergedEnv,
   };
 }
 
@@ -214,12 +247,16 @@ export async function saveSettings(slug: string, input: ReturnType<typeof readSe
   if (!preset) return null;
   const current = await getVenture(slug);
   const db = await getDb();
+  const adminDatabase = buildAdminDatabaseFromEnv(input.env);
   await db.collection("ventures").updateOne(
     { slug },
     {
       $set: {
         name: input.name || preset.name,
-        deployedUrl: input.deployedUrl,
+        deployedUrl: input.clientPortalUrl,
+        clientPortalUrl: input.clientPortalUrl,
+        adminPortalUrl: input.adminPortalUrl,
+        adminDatabase,
         env: input.env,
         adminEmail: input.adminEmail,
         adminPassword: input.adminPassword || current?.adminPassword || "",

@@ -3,7 +3,7 @@ import {
   platformDatabaseFromEnv,
   poolMatchesPlatformUri,
 } from "@/lib/clusters";
-import { mongoUriDisplayHost } from "@/lib/env";
+import { mongoUriDisplayHost, mongoUriHostKey } from "@/lib/env";
 import { addPool, getVenture, isMongoUri } from "@/lib/ventures";
 import { getDb } from "@/lib/db";
 
@@ -91,10 +91,43 @@ async function pruneStaleEmptyPools(slug: string) {
   }
 }
 
+/** Remove extra empty pools that point at the same Atlas host (e.g. manual DB1 duplicate). */
+async function dedupeDuplicateHostPools(slug: string) {
+  const venture = await getVenture(slug);
+  if (!venture || venture.pools.length < 2) return;
+  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
+  const byHost = new Map<string, typeof venture.pools>();
+  for (const pool of venture.pools) {
+    const key = mongoUriHostKey(pool.uri) || pool.id;
+    const list = byHost.get(key) ?? [];
+    list.push(pool);
+    byHost.set(key, list);
+  }
+  const removeIds: string[] = [];
+  for (const group of byHost.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => {
+      const ap = poolMatchesPlatformUri(a.uri, platformUri) ? 1 : 0;
+      const bp = poolMatchesPlatformUri(b.uri, platformUri) ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return b.clusters.length - a.clusters.length;
+    });
+    for (let i = 1; i < group.length; i++) {
+      if (group[i].clusters.length === 0) removeIds.push(group[i].id);
+    }
+  }
+  if (!removeIds.length) return;
+  const central = await getDb();
+  for (const id of removeIds) {
+    await central.collection("ventures").updateOne({ slug }, { $pull: { pools: { id } } } as never);
+  }
+}
+
 /** Sync project .env URI into pools and reserve cluster 0 for the platform DB. */
 export async function ensureVentureMongoPools(slug: string) {
   await ensureDefaultPoolFromEnv(slug);
   await pruneStaleEmptyPools(slug);
+  await dedupeDuplicateHostPools(slug);
   await reorderPlatformPoolFirst(slug);
   await ensurePlatformCluster(slug);
 }
