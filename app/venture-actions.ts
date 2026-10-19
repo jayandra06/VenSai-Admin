@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
-import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
+import { ventureAdminDatabaseFromEnv } from "@/lib/clusters";
 import { describeMongoUri, mongoUriHostKey } from "@/lib/env";
 import { inviteOrganization } from "@/lib/org-invite";
 import { ensureVentureMongoPools } from "@/lib/platform-cluster";
@@ -56,12 +56,11 @@ export async function seedVentureAdmin(formData: FormData) {
   if (!input.adminEmail || !input.adminPassword) go(slug, "error", "creds");
   const saved = await saveSettings(slug, input);
   await ensureVentureMongoPools(slug);
-  const uri = saved?.env.find((row) => row.key === "MONGODB_URI")?.value.trim() || "";
+  const { uri, database } = ventureAdminDatabaseFromEnv(saved?.env ?? []);
   if (!isMongoUri(uri)) go(slug, "error", "missing-uri");
   const target = describeMongoUri(uri);
-  if (!target || target.database === "vensai" || target.database === "admin") go(slug, "error", "protected-db");
+  if (!target || database === "vensai" || database === "admin") go(slug, "error", "protected-db");
   try {
-    const { database } = platformDatabaseFromEnv(saved?.env ?? []);
     const seeded = await seedAdminAccount(uri, input.adminEmail, input.adminPassword, database);
     await rememberSeed(slug, { email: input.adminEmail, ...seeded });
   } catch {
@@ -138,12 +137,6 @@ export async function deleteVenturePool(formData: FormData) {
   if (!findPreset(slug)) redirect("/dashboard/ventures");
   const venture = await getVenture(slug);
   if (!venture) redirect("/dashboard/ventures");
-  const pool = venture.pools.find((item) => item.id === poolId);
-  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
-  if (pool && platformUri && poolMatchesPlatformUri(pool.uri, platformUri)) {
-    refresh(slug);
-    go(slug, "error", "uri-default");
-  }
   const removed = await removePool(slug, poolId);
   refresh(slug);
   go(slug, removed ? "notice" : "error", removed ? "uri-removed" : "uri-busy");

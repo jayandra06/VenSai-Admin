@@ -1,6 +1,6 @@
 /**
- * One-time: point Rofyt venture MONGODB_URI at the same Atlas cluster as the portal,
- * database `rofyt`. Run from repo root: node scripts/align-rofyt-uri-with-portal.mjs
+ * Point Rofyt venture admin DB at the same Atlas cluster as the portal (database rofyt_admin).
+ * Does not modify customer URI pools. Run: node scripts/align-rofyt-uri-with-portal.mjs
  */
 import fs from "node:fs";
 import { MongoClient } from "mongodb";
@@ -16,39 +16,51 @@ function loadPortalUri() {
   return uri;
 }
 
-function rofytUriFromPortal(portalUri) {
+function adminUriFromPortal(portalUri, adminDb = "rofyt_admin") {
   const [pathPart, query] = portalUri.split("?");
   const slash = pathPart.lastIndexOf("/");
   const hostPart =
     slash > pathPart.indexOf("://") + 2 ? pathPart.slice(0, slash) : pathPart.replace(/\/$/, "");
   const qs = query ? `?${query}` : "?retryWrites=true&w=majority";
-  return `${hostPart}/rofyt${qs}`;
+  return `${hostPart}/${adminDb}${qs}`;
 }
 
 const portalUri = loadPortalUri();
-const rofytUri = rofytUriFromPortal(portalUri);
+const adminUri = adminUriFromPortal(portalUri);
 const client = new MongoClient(portalUri);
 await client.connect();
 const db = client.db("vensai");
 const doc = await db.collection("ventures").findOne({ slug: "rofyt" });
 if (!doc) {
-  console.log("No rofyt venture document yet — nothing to update.");
+  console.log("No rofyt venture document yet.");
   await client.close();
   process.exit(0);
 }
 
-const env = Array.isArray(doc.env) ? [...doc.env] : [];
-const idx = env.findIndex((r) => r.key === "MONGODB_URI");
-if (idx >= 0) env[idx] = { ...env[idx], value: rofytUri };
-else env.push({ key: "MONGODB_URI", value: rofytUri });
-if (!env.some((r) => r.key === "PLATFORM_DB")) env.push({ key: "PLATFORM_DB", value: "rofyt" });
-
-const pools = Array.isArray(doc.pools) ? doc.pools.map((p) => ({ ...p, uri: rofytUri })) : [];
+const env = Array.isArray(doc.env) ? doc.env.filter((r) => r.key !== "MONGODB_URI") : [];
+const upsert = (key, value) => {
+  const i = env.findIndex((r) => r.key === key);
+  if (i >= 0) env[i] = { key, value };
+  else env.push({ key, value });
+};
+upsert("ADMIN_MONGODB_URI", adminUri);
+upsert("ADMIN_DB", "rofyt_admin");
 
 await db.collection("ventures").updateOne(
   { slug: "rofyt" },
-  { $set: { env, pools, updatedAt: new Date() } },
+  {
+    $set: {
+      env,
+      adminDatabase: {
+        uri: adminUri,
+        database: "rofyt_admin",
+        host: adminUri.split("@")[1]?.split("/")[0] ?? "",
+        updatedAt: new Date().toISOString(),
+      },
+      updatedAt: new Date(),
+    },
+  },
 );
-console.log("Updated rofyt venture MONGODB_URI and all pool URIs to:");
-console.log(rofytUri.replace(/:([^:@/]+)@/, ":***@"));
+console.log("Set ADMIN_MONGODB_URI to:");
+console.log(adminUri.replace(/:([^:@/]+)@/, ":***@"));
 await client.close();

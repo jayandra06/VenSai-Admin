@@ -2,9 +2,6 @@ import {
   customerDatabaseName,
   nextCustomerClusterIndex,
   pickPoolWithCapacity,
-  platformDatabaseFromEnv,
-  poolIsPlatformPool,
-  poolMatchesPlatformUri,
 } from "@/lib/clusters";
 import { hashPassword, generateTempPassword } from "@/lib/password";
 import { sendOrganizationInvite } from "@/lib/mail";
@@ -23,9 +20,7 @@ async function withClient<T>(uri: string, run: (client: MongoClient) => Promise<
   }
 }
 
-function resolvePoolUri(venture: Venture, pool: VenturePool) {
-  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
-  if (platformUri && poolMatchesPlatformUri(pool.uri, platformUri)) return platformUri;
+function resolvePoolUri(_venture: Venture, pool: VenturePool) {
   return pool.uri;
 }
 
@@ -146,7 +141,7 @@ export async function inviteOrganization(
   const pool = pickPoolWithCapacity(venture);
   if (!pool) return "no-capacity" as const;
 
-  const clusterIndex = nextCustomerClusterIndex(pool, poolIsPlatformPool(pool, venture));
+  const clusterIndex = nextCustomerClusterIndex(pool);
   if (clusterIndex === null) return "no-capacity" as const;
 
   const orgCode = String(clusterIndex);

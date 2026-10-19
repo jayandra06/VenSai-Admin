@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { formatEnv, type EnvPair } from "@/lib/env";
 
-export function DeployEnvPreview({ rows }: { rows: EnvPair[] }) {
+export function DeployEnvPreview({ rows, title }: { rows: EnvPair[]; title?: string }) {
   const [copied, setCopied] = useState(false);
   const text = formatEnv(rows);
 
@@ -20,7 +20,7 @@ export function DeployEnvPreview({ rows }: { rows: EnvPair[] }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-sm font-medium text-slate-700">Deploy .env (Vercel / Rofyt server)</p>
+        <p className="text-sm font-medium text-slate-700">{title ?? "Deploy .env (Vercel / Rofyt server)"}</p>
         <button
           type="button"
           onClick={copy}

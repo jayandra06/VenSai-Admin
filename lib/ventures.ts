@@ -1,7 +1,6 @@
 import { MongoClient } from "mongodb";
 import { getDb } from "@/lib/db";
 import { describeMongoUri, type EnvPair } from "@/lib/env";
-import { platformDatabaseFromEnv, poolMatchesPlatformUri } from "@/lib/clusters";
 import { hashPassword } from "@/lib/password";
 import {
   buildAdminDatabaseFromEnv,
@@ -438,8 +437,6 @@ export async function removePool(slug: string, poolId: string) {
   const venture = await getVenture(slug);
   const pool = venture?.pools.find((item) => item.id === poolId);
   if (!pool || pool.clusters.length > 0) return false;
-  const { uri: platformUri } = platformDatabaseFromEnv(venture?.env ?? []);
-  if (platformUri && poolMatchesPlatformUri(pool.uri, platformUri)) return false;
   const db = await getDb();
   await db.collection("ventures").updateOne({ slug }, { $pull: { pools: { id: poolId } } } as never);
   return true;
