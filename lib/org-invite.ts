@@ -2,23 +2,122 @@ import {
   customerDatabaseName,
   nextCustomerClusterIndex,
   pickPoolWithCapacity,
+  platformDatabaseFromEnv,
   poolIsPlatformPool,
+  poolMatchesPlatformUri,
 } from "@/lib/clusters";
 import { hashPassword, generateTempPassword } from "@/lib/password";
 import { sendOrganizationInvite } from "@/lib/mail";
 import { ensureVentureMongoPools } from "@/lib/platform-cluster";
-import { getVenture, type Venture, type VentureCluster } from "@/lib/ventures";
+import { getVenture, pingMongo, type Venture, type VentureCluster, type VenturePool } from "@/lib/ventures";
 import { getDb } from "@/lib/db";
-import { MongoClient } from "mongodb";
+import { MongoClient, type Db } from "mongodb";
 
 async function withClient<T>(uri: string, run: (client: MongoClient) => Promise<T>) {
-  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 8000 });
+  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 15000 });
   try {
     await client.connect();
     return await run(client);
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+function resolvePoolUri(venture: Venture, pool: VenturePool) {
+  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
+  if (platformUri && poolMatchesPlatformUri(pool.uri, platformUri)) return platformUri;
+  return pool.uri;
+}
+
+async function ensureCollection(db: Db, name: string) {
+  const exists = await db.listCollections({ name }, { nameOnly: true }).hasNext();
+  if (!exists) await db.createCollection(name);
+}
+
+function isDuplicateKeyError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /E11000|duplicate key/i.test(message);
+}
+
+function mapProvisionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timed out|Server selection|ECONNREFUSED|ENOTFOUND/i.test(message)) {
+    return "provision-offline" as const;
+  }
+  if (/authentication failed|bad auth|Unauthorized|Authentication/i.test(message)) {
+    return "provision-auth" as const;
+  }
+  if (/E11000|duplicate key/i.test(message)) {
+    return "org-email-taken" as const;
+  }
+  return "provision-failed" as const;
+}
+
+async function provisionTenantDatabase(
+  uri: string,
+  database: string,
+  slug: string,
+  orgCode: string,
+  clusterIndex: number,
+  input: { organizationName: string; adminEmail: string; phone: string },
+  passwordFields: { passwordHash: string; passwordSalt: string; passwordAlgo: string },
+) {
+  const email = input.adminEmail.trim().toLowerCase();
+
+  await withClient(uri, async (client) => {
+    const db = client.db(database);
+    await db.command({ ping: 1 });
+
+    await db.collection("organization").createIndex({ orgCode: 1 }, { unique: true });
+    await db.collection("admins").createIndex({ email: 1 }, { unique: true });
+
+    try {
+      await db.collection("organization").insertOne({
+        orgCode,
+        clusterId: clusterIndex,
+        name: input.organizationName.trim(),
+        phone: input.phone.trim(),
+        adminEmail: email,
+        venture: slug,
+        createdAt: new Date(),
+      });
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+      const existing = await db.collection("organization").findOne({ orgCode });
+      if (!existing) throw error;
+    }
+
+    try {
+      await db.collection("admins").insertOne({
+        email,
+        role: "org_admin",
+        orgCode,
+        clusterId: clusterIndex,
+        phone: input.phone.trim(),
+        ...passwordFields,
+        mustChangePassword: true,
+        createdAt: new Date(),
+      });
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+      const admin = await db.collection("admins").findOne({ email });
+      if (!admin || String(admin.orgCode) !== orgCode) throw error;
+      await db.collection("admins").updateOne(
+        { email },
+        {
+          $set: {
+            ...passwordFields,
+            mustChangePassword: true,
+            updatedAt: new Date(),
+          },
+        },
+      );
+    }
+
+    await ensureCollection(db, "fleets");
+    await ensureCollection(db, "vehicles");
+    await ensureCollection(db, "locations");
+  });
 }
 
 export async function inviteOrganization(
@@ -38,40 +137,23 @@ export async function inviteOrganization(
 
   const orgCode = String(clusterIndex);
   const database = customerDatabaseName(clusterIndex);
+  const uri = resolvePoolUri(venture, pool);
+
+  const online = await pingMongo(uri);
+  if (!online) return "provision-offline" as const;
+
   const tempPassword = generateTempPassword();
   const { passwordHash, passwordSalt, passwordAlgo } = hashPassword(tempPassword);
 
   try {
-    await withClient(pool.uri, async (client) => {
-      const db = client.db(database);
-      await db.collection("organization").insertOne({
-        orgCode,
-        clusterId: clusterIndex,
-        name: input.organizationName.trim(),
-        phone: input.phone.trim(),
-        adminEmail: input.adminEmail.trim().toLowerCase(),
-        venture: slug,
-        createdAt: new Date(),
-      });
-      await db.collection("admins").createIndex({ email: 1 }, { unique: true });
-      await db.collection("admins").insertOne({
-        email: input.adminEmail.trim().toLowerCase(),
-        role: "org_admin",
-        orgCode,
-        clusterId: clusterIndex,
-        phone: input.phone.trim(),
-        passwordHash,
-        passwordSalt,
-        passwordAlgo,
-        mustChangePassword: true,
-        createdAt: new Date(),
-      });
-      await db.createCollection("fleets");
-      await db.createCollection("vehicles");
-      await db.createCollection("locations");
+    await provisionTenantDatabase(uri, database, slug, orgCode, clusterIndex, input, {
+      passwordHash,
+      passwordSalt,
+      passwordAlgo,
     });
-  } catch {
-    return "provision-failed" as const;
+  } catch (error) {
+    console.error("[inviteOrganization] provision failed", database, error);
+    return mapProvisionError(error);
   }
 
   const mail = await sendOrganizationInvite({
@@ -81,27 +163,30 @@ export async function inviteOrganization(
     orgCode,
     email: input.adminEmail.trim().toLowerCase(),
     password: tempPassword,
-    loginUrl: loginUrl || "http://localhost:3001/login",
+    loginUrl: loginUrl || "http://localhost:3001/erp/login",
   });
 
   const central = await getDb();
-  await central.collection("ventures").updateOne(
-    { slug, "pools.id": pool.id },
-    {
-      $push: {
-        "pools.$.clusters": {
-          id: orgCode,
-          orgCode,
-          organizationName: input.organizationName.trim(),
-          adminEmail: input.adminEmail.trim().toLowerCase(),
-          phone: input.phone.trim(),
-          database,
-          createdAt: new Date(),
-          emailSentAt: mail.sent ? new Date().toISOString() : null,
+  const alreadyListed = pool.clusters.some((c) => c.orgCode === orgCode || c.id === orgCode);
+  if (!alreadyListed) {
+    await central.collection("ventures").updateOne(
+      { slug, "pools.id": pool.id },
+      {
+        $push: {
+          "pools.$.clusters": {
+            id: orgCode,
+            orgCode,
+            organizationName: input.organizationName.trim(),
+            adminEmail: input.adminEmail.trim().toLowerCase(),
+            phone: input.phone.trim(),
+            database,
+            createdAt: new Date(),
+            emailSentAt: mail.sent ? new Date().toISOString() : null,
+          },
         },
-      },
-    } as never,
-  );
+      } as never,
+    );
+  }
 
   return mail.sent ? ("invited" as const) : ("invited-no-mail" as const);
 }

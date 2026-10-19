@@ -45,7 +45,12 @@ const errors: Record<string, string> = {
   "no-pool": "Save MONGODB_URI in the project .env first.",
   "no-capacity": "No cluster slots left on the current URI pools. Add another MongoDB URI when a pool is full.",
   "uri-default": "The project .env MongoDB URI stays in the list automatically and cannot be removed.",
-  "provision-failed": "Could not create the organization database on MongoDB.",
+  "provision-failed": "Could not create the organization database on MongoDB. Check Vercel logs or retry once.",
+  "provision-offline":
+    "Could not reach the Rofyt MongoDB cluster from the server. In Atlas → Network Access allow 0.0.0.0/0 and confirm the venture MONGODB_URI.",
+  "provision-auth":
+    "MongoDB rejected the Rofyt connection string. Update MONGODB_URI in the venture .env (correct password) and save settings.",
+  "org-email-taken": "That admin email is already used in this organization database. Use another email or remove the partial org in Atlas.",
   missing: "That MongoDB URI could not be found.",
 };
 
