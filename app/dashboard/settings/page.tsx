@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ notice?: string; error?: string }>;
+  searchParams: Promise<{ notice?: string; error?: string; detail?: string }>;
 }) {
   let smtp = { host: "", port: 587, secure: false, user: "", pass: "", from: "" };
   let loadError = "";
@@ -37,6 +37,13 @@ export default async function SettingsPage({
       {query.error === "required" ? (
         <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           SMTP host and From address are required.
+        </p>
+      ) : null}
+      {query.error === "db" ? (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {query.detail
+            ? decodeURIComponent(query.detail)
+            : "Could not save settings — the admin portal could not reach MongoDB. In Atlas → Network Access for cluster0.6zs5dc0, allow 0.0.0.0/0 (or Vercel IPs), then try again."}
         </p>
       ) : null}
       <form action={saveSmtpSettings} className="space-y-4 rounded-2xl bg-white p-5 shadow-sm">

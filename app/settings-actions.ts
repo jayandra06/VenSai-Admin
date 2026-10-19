@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
+import { mongoErrorMessage } from "@/lib/db";
 import { savePortalSmtpSettings } from "@/lib/portal-settings";
 
 async function requireUser() {
@@ -19,7 +20,13 @@ export async function saveSmtpSettings(formData: FormData) {
   const user = String(formData.get("user") || "").trim();
   const pass = String(formData.get("pass") || "");
   if (!host || !from) redirect("/dashboard/settings?error=required");
-  await savePortalSmtpSettings({ host, port, secure, user, pass, from });
+  try {
+    await savePortalSmtpSettings({ host, port, secure, user, pass, from });
+  } catch (error) {
+    console.error("saveSmtpSettings:", error);
+    const detail = encodeURIComponent(mongoErrorMessage(error).slice(0, 400));
+    redirect(`/dashboard/settings?error=db&detail=${detail}`);
+  }
   revalidatePath("/dashboard/settings");
   revalidatePath("/dashboard/ventures");
   redirect("/dashboard/settings?notice=saved");

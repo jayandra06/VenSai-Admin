@@ -48,7 +48,7 @@ export async function loadRecords(limit = 100) {
   return { ok: true as const, total, open, records: docs.map(mapDoc) };
 }
 
-function mongoErrorMessage(error: unknown) {
+export function mongoErrorMessage(error: unknown) {
   if (!uri) {
     return "MONGODB_URI is not set on this server. In Vercel (or your host), add MONGODB_URI under Project → Settings → Environment Variables, then redeploy.";
   }
@@ -56,8 +56,8 @@ function mongoErrorMessage(error: unknown) {
   if (/authentication failed|bad auth|Invalid credentials/i.test(message)) {
     return "MongoDB rejected the username or password. Update MONGODB_URI in your hosting environment.";
   }
-  if (/timed out|Server selection|ECONNREFUSED|ENOTFOUND/i.test(message)) {
-    return "Could not reach MongoDB. In Atlas → Network Access, allow access from anywhere (0.0.0.0/0) or your host’s IPs, then confirm the connection string.";
+  if (/timed out|Server selection|ECONNREFUSED|ENOTFOUND|ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR|tlsv1 alert internal error/i.test(message)) {
+    return "Could not reach MongoDB from this server (common on Vercel). In MongoDB Atlas → Network Access for your cluster, add 0.0.0.0/0 or allow Vercel, confirm MONGODB_URI points at cluster0.6zs5dc0/vensai, then redeploy.";
   }
   return "Could not reach MongoDB. Check MONGODB_URI and Atlas network access, then redeploy.";
 }
