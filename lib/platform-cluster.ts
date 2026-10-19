@@ -33,7 +33,6 @@ async function ensureDefaultPoolFromEnv(slug: string) {
 }
 
 export async function ensurePlatformCluster(slug: string) {
-  await ensureDefaultPoolFromEnv(slug);
   const venture = await getVenture(slug);
   if (!venture) return;
   const { uri: platformUri, database } = platformDatabaseFromEnv(venture.env);
@@ -64,7 +63,38 @@ export async function ensurePlatformCluster(slug: string) {
   );
 }
 
+async function reorderPlatformPoolFirst(slug: string) {
+  const venture = await getVenture(slug);
+  if (!venture) return;
+  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
+  if (!platformUri) return;
+  const platformPool = venture.pools.find((item) => poolMatchesPlatformUri(item.uri, platformUri));
+  if (!platformPool || venture.pools[0]?.id === platformPool.id) return;
+  const others = venture.pools.filter((item) => item.id !== platformPool.id);
+  const central = await getDb();
+  await central.collection("ventures").updateOne({ slug }, { $set: { pools: [platformPool, ...others] } });
+}
+
+/** Drop empty URI pools that no longer match the saved project .env (stale hosts). */
+async function pruneStaleEmptyPools(slug: string) {
+  const venture = await getVenture(slug);
+  if (!venture) return;
+  const { uri: platformUri } = platformDatabaseFromEnv(venture.env);
+  if (!platformUri) return;
+  const stale = venture.pools.filter(
+    (pool) => !poolMatchesPlatformUri(pool.uri, platformUri) && pool.clusters.length === 0,
+  );
+  if (!stale.length) return;
+  const central = await getDb();
+  for (const pool of stale) {
+    await central.collection("ventures").updateOne({ slug }, { $pull: { pools: { id: pool.id } } } as never);
+  }
+}
+
 /** Sync project .env URI into pools and reserve cluster 0 for the platform DB. */
 export async function ensureVentureMongoPools(slug: string) {
+  await ensureDefaultPoolFromEnv(slug);
+  await pruneStaleEmptyPools(slug);
+  await reorderPlatformPoolFirst(slug);
   await ensurePlatformCluster(slug);
 }

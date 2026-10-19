@@ -47,6 +47,9 @@ function mapProvisionError(error: unknown) {
   if (/authentication failed|bad auth|Unauthorized|Authentication/i.test(message)) {
     return "provision-auth" as const;
   }
+  if (/email-in-use:(\S+)/i.test(message)) {
+    return "org-email-taken" as const;
+  }
   if (/E11000|duplicate key/i.test(message)) {
     return "org-email-taken" as const;
   }
@@ -87,31 +90,42 @@ async function provisionTenantDatabase(
       if (!existing) throw error;
     }
 
-    try {
-      await db.collection("admins").insertOne({
-        email,
-        role: "org_admin",
-        orgCode,
-        clusterId: clusterIndex,
-        phone: input.phone.trim(),
-        ...passwordFields,
-        mustChangePassword: true,
-        createdAt: new Date(),
-      });
-    } catch (error) {
-      if (!isDuplicateKeyError(error)) throw error;
-      const admin = await db.collection("admins").findOne({ email });
-      if (!admin || String(admin.orgCode) !== orgCode) throw error;
+    const existingAdmin = await db.collection("admins").findOne({ email });
+    if (existingAdmin && String(existingAdmin.orgCode) !== orgCode) {
+      const err = new Error(`email-in-use:${database}`);
+      throw err;
+    }
+    if (existingAdmin) {
       await db.collection("admins").updateOne(
         { email },
         {
           $set: {
+            role: "org_admin",
+            orgCode,
+            clusterId: clusterIndex,
+            phone: input.phone.trim(),
             ...passwordFields,
             mustChangePassword: true,
             updatedAt: new Date(),
           },
         },
       );
+    } else {
+      try {
+        await db.collection("admins").insertOne({
+          email,
+          role: "org_admin",
+          orgCode,
+          clusterId: clusterIndex,
+          phone: input.phone.trim(),
+          ...passwordFields,
+          mustChangePassword: true,
+          createdAt: new Date(),
+        });
+      } catch (error) {
+        if (!isDuplicateKeyError(error)) throw error;
+        throw new Error(`email-in-use:${database}`);
+      }
     }
 
     await ensureCollection(db, "fleets");

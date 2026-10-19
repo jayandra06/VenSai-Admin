@@ -50,7 +50,8 @@ const errors: Record<string, string> = {
     "Could not reach the Rofyt MongoDB cluster from the server. In Atlas → Network Access allow 0.0.0.0/0 and confirm the venture MONGODB_URI.",
   "provision-auth":
     "MongoDB rejected the Rofyt connection string. Update MONGODB_URI in the venture .env (correct password) and save settings.",
-  "org-email-taken": "That admin email is already used in this organization database. Use another email or remove the partial org in Atlas.",
+  "org-email-taken":
+    "That admin email already exists in the tenant database for this cluster (e.g. rofyt-1). Use a different email, or remove that organization row below and drop the database in Atlas.",
   missing: "That MongoDB URI could not be found.",
 };
 
@@ -91,6 +92,12 @@ export default async function VenturePage({
   ]);
   const onlineById = new Map(poolStatus.map((item) => [item.id, item.online]));
   const message = query.notice ? notices[query.notice] : query.error ? errors[query.error] : "";
+  const stalePools =
+    venture && platformEnv.uri
+      ? venture.pools.filter(
+          (pool) => !poolMatchesPlatformUri(pool.uri, platformEnv.uri) && pool.clusters.length > 0,
+        )
+      : [];
 
   return (
     <div className="space-y-6">
@@ -116,6 +123,14 @@ export default async function VenturePage({
           }`}
         >
           {message}
+        </p>
+      ) : null}
+      {stalePools.length ? (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          An older MongoDB URI pool ({stalePools.map((p) => p.label).join(", ")}) still has organizations but does not
+          match your saved <span className="font-mono">MONGODB_URI</span>. Use the same Atlas Cluster0 host as the admin
+          portal with database <span className="font-mono">/rofyt</span>, save settings, then remove stale org rows or
+          delete those tenant databases in Atlas.
         </p>
       ) : null}
       {venture ? (
@@ -147,7 +162,9 @@ export default async function VenturePage({
               <div className="mt-5">
                 <h3 className="font-medium text-slate-900">Project .env</h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  Paste the whole file, split it into fields, or copy it back as one .env.
+                  Paste the whole file, split it into fields, or copy it back as one .env. Use the same Atlas cluster as
+                  the admin portal with database <span className="font-mono">rofyt</span> (not <span className="font-mono">vensai</span>
+                  ).
                 </p>
                 <div className="mt-3">
                   <EnvEditor pairs={venture.env} />

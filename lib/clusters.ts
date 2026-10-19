@@ -49,8 +49,13 @@ export function poolIsPlatformPool(pool: VenturePool, venture: Venture) {
 }
 
 export function pickPoolWithCapacity(venture: Venture) {
+  const ordered = [...venture.pools].sort((a, b) => {
+    const aPlatform = poolIsPlatformPool(a, venture) ? 0 : 1;
+    const bPlatform = poolIsPlatformPool(b, venture) ? 0 : 1;
+    return aPlatform - bPlatform;
+  });
   return (
-    venture.pools.find((pool) => poolHasCapacity(pool, poolIsPlatformPool(pool, venture))) ?? null
+    ordered.find((pool) => poolHasCapacity(pool, poolIsPlatformPool(pool, venture))) ?? null
   );
 }
 
