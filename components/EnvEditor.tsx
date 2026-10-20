@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { formatEnv, parseEnv, type EnvPair } from "@/lib/env";
+import { formatEnv, normalizeEnvPairs, parseEnv, type EnvPair } from "@/lib/env";
 
 export function EnvEditor({ pairs }: { pairs: EnvPair[] }) {
-  const [rows, setRows] = useState<EnvPair[]>(pairs.length ? pairs : [{ key: "", value: "" }]);
+  const initial = normalizeEnvPairs(pairs);
+  const [rows, setRows] = useState<EnvPair[]>(initial.length ? initial : [{ key: "", value: "" }]);
   const [paste, setPaste] = useState("");
   const [copied, setCopied] = useState(false);
   const [manual, setManual] = useState("");

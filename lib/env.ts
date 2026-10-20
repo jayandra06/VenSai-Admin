@@ -23,14 +23,23 @@ export function parseEnv(raw: string): EnvPair[] {
 }
 
 function formatValue(value: string) {
-  if (/[\s#"'`]/.test(value)) return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  return value;
+  const safe = value ?? "";
+  if (/[\s#"'`]/.test(safe)) return `"${safe.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return safe;
+}
+
+export function normalizeEnvPairs(rows: EnvPair[] | undefined | null): EnvPair[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => ({
+    key: String(row?.key ?? "").trim(),
+    value: String(row?.value ?? ""),
+  }));
 }
 
 export function formatEnv(rows: EnvPair[]) {
-  return rows
-    .filter((row) => row.key.trim())
-    .map((row) => `${row.key.trim()}=${formatValue(row.value)}`)
+  return normalizeEnvPairs(rows)
+    .filter((row) => row.key)
+    .map((row) => `${row.key}=${formatValue(row.value)}`)
     .join("\n");
 }
 

@@ -231,7 +231,7 @@ export default async function VenturePage({
                 below (not here).
               </p>
               <div className="mt-3">
-                <EnvEditor pairs={venture.env} />
+                  <EnvEditor pairs={venture.env} />
               </div>
               <div className="mt-4">
                 <DeployEnvPreview rows={deployEnv} title="Full record (stored in vensai)" />
@@ -456,7 +456,9 @@ export default async function VenturePage({
                   <div className="mt-3 h-2 rounded-full bg-slate-100">
                     <div
                       className="h-2 rounded-full bg-[#3C50E0]"
-                      style={{ width: `${Math.min(100, (pool.clusters.length / pool.freeLimit) * 100)}%` }}
+                      style={{
+                        width: `${Math.min(100, pool.freeLimit > 0 ? (pool.clusters.length / pool.freeLimit) * 100 : 0)}%`,
+                      }}
                     />
                   </div>
                   {full ? (

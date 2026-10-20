@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { formatEnv, type EnvPair } from "@/lib/env";
+import { formatEnv, normalizeEnvPairs, type EnvPair } from "@/lib/env";
 
 export function DeployEnvPreview({ rows, title }: { rows: EnvPair[]; title?: string }) {
   const [copied, setCopied] = useState(false);
-  const text = formatEnv(rows);
+  const text = formatEnv(normalizeEnvPairs(rows));
 
   async function copy() {
     try {

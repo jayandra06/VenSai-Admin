@@ -10,11 +10,12 @@ export function SideNav({
   links: { href: string; label: string }[];
   variant: "side" | "top";
 }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   return (
     <nav className={variant === "side" ? "flex flex-1 flex-col gap-1 px-3" : "flex gap-3 md:hidden"}>
       {links.map((link) => {
-        const active = link.href === "/dashboard" ? pathname === link.href : pathname.startsWith(link.href);
+        const active =
+          link.href === "/dashboard" ? pathname === link.href : pathname.startsWith(link.href);
         return (
           <Link
             key={link.href}
